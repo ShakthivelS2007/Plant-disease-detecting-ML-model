@@ -60,6 +60,7 @@ async def predict(file: UploadFile = File(...)):
         
         heatmap_data = heatmap(image_path, model)
 
+        #Preprocess
         image = Image.open(io.BytesIO(contents)).convert("RGB")
         image = image.resize((224, 224)) 
         img_array = np.array(image) / 255.0

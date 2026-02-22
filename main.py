@@ -89,11 +89,24 @@ async def predict(file: UploadFile = File(...)):
             ],
         ]
 
+        WIKI_PAGES = [
+            [
+                "https://en.wikipedia.org/wiki/Alternaria_solani",
+            ],
+            [
+                "-"
+            ],
+            [
+                "https://en.wikipedia.org/wiki/Tomato_yellow_leaf_curl_virus",
+            ],
+        ]
+
         return {
             "success": True,
             "prediction": CLASS_NAMES[predicted_index],
             "confidence": round(confidence * 100, 2),
             "remedies": REMEDIES[predicted_index],
+            "wikipage": WIKI_PAGES[predicted_index],
             "heatmap": f"http://192.168.1.5:8000/uploads/{heatmap_data}",
         }
 

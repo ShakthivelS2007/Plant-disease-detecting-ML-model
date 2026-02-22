@@ -71,23 +71,23 @@ async def predict(file: UploadFile = File(...)):
         predicted_index = int(np.argmax(predictions))
         confidence = float(np.max(predictions))
 
-        REMEDIES = {
-            "Early Blight": [
-                "Remove indected leaves immediately.",
+        REMEDIES = [
+            [
+                "Remove infected leaves immediately.",
                 "Use copper based fungicide (eg: chlorothalonil, mancozeb, azoxystrobin, etc).",
                 "Ensure there is proper air circulation between plants.",
             ],
-            "Healthy": [
+            [
                 "Continue watering schedule.",
                 "Ensure good sunlight exposure.",
                 "Mointor early signs of pest.",
             ],
-            "Leaf Curl": [
+            [
                 "Control whitefiles using neem oil.",
                 "Remove infected plants to prevent spread.",
                 "Maintain proper plant nutrition.",
             ],
-        }
+        ]
 
         return {
             "success": True,

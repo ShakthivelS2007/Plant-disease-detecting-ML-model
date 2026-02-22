@@ -94,7 +94,7 @@ async def predict(file: UploadFile = File(...)):
                 "https://en.wikipedia.org/wiki/Alternaria_solani",
             ],
             [
-                "-"
+                "None"
             ],
             [
                 "https://en.wikipedia.org/wiki/Tomato_yellow_leaf_curl_virus",

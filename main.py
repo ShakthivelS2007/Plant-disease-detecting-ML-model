@@ -71,7 +71,6 @@ async def predict(file: UploadFile = File(...)):
         predicted_index = int(np.argmax(predictions))
         confidence = float(np.max(predictions))
 
-        #Remedies
         REMEDIES = [
             [
                 "Remove inf ected leaves immediately.",

@@ -73,7 +73,7 @@ async def predict(file: UploadFile = File(...)):
 
         REMEDIES = [
             [
-                "Remove infected leaves immediately.",
+                "Remove inf ected leaves immediately.",
                 "Use copper based fungicide (eg: chlorothalonil, mancozeb, azoxystrobin, etc).",
                 "Ensure there is proper air circulation between plants.",
             ],

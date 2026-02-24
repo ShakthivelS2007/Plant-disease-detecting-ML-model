@@ -8,41 +8,30 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import uvicorn
 
-# --- THE NUCLEAR OPTION: KERAS 3 TO KERAS 2 COMPATIBILITY PATCH ---
-from tensorflow.python.keras.layers import serialization
+# --- THE "GOD MODE" CUSTOM OBJECT SCOPE ---
+# We define a custom version of layers that knows how to ignore Keras 3 metadata
+from tensorflow.keras.layers import InputLayer, Conv2D, Dense
 
-# We find the internal Keras function that creates layers from the file config
-try:
-    original_get_layer = serialization.get_layer_obj
-    target_attr = 'get_layer_obj'
-except AttributeError:
-    original_get_layer = getattr(serialization, 'get_layer', None)
-    target_attr = 'get_layer'
+class PatchedInputLayer(InputLayer):
+    def __init__(self, *args, **kwargs):
+        kwargs.pop('batch_shape', None)
+        kwargs.pop('optional', None)
+        kwargs.pop('registered_name', None)
+        super().__init__(*args, **kwargs)
 
-def patched_get_layer(config):
-    if isinstance(config, dict):
-        # FIX 1: Convert 'DTypePolicy' dictionary back to a simple string (float32)
-        if 'dtype' in config and isinstance(config['dtype'], dict):
-            if 'config' in config['dtype'] and 'name' in config['dtype']['config']:
-                config['dtype'] = config['dtype']['config']['name']
-        
-        # FIX 2: Strip modern Keras 3 keywords that Keras 2 doesn't recognize
-        config.pop('batch_shape', None)
-        config.pop('optional', None)
-        config.pop('registered_name', None)
-    
-    return original_get_layer(config)
-
-# Apply the patch to the Keras engine before loading the model
-if original_get_layer:
-    setattr(serialization, target_attr, patched_get_layer)
+class PatchedConv2D(Conv2D):
+    def __init__(self, *args, **kwargs):
+        # This handles the 'DTypePolicy' error specifically
+        if 'dtype' in kwargs and isinstance(kwargs['dtype'], dict):
+            kwargs['dtype'] = kwargs.get('dtype', {}).get('config', {}).get('name', 'float32')
+        kwargs.pop('registered_name', None)
+        super().__init__(*args, **kwargs)
 
 # 1. IMPORT HEATMAP LOGIC
 try:
     from test_heatmap import heatmap
 except ImportError:
     heatmap = None
-    print("⚠️ Warning: test_heatmap.py not found.")
 
 app = FastAPI()
 
@@ -55,10 +44,16 @@ app.mount("/static", StaticFiles(directory=UPLOAD_FOLDER), name="static")
 # 3. MODEL LOADING
 MODEL_PATH = "legacy_model.h5"
 
-print("Starting server with Version-Compatibility Patch...")
+print("Starting server with God Mode Custom Scope...")
 try:
-    # compile=False is crucial to avoid patching Optimizer metadata too
-    model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+    # We map the standard layer names to our patched versions
+    custom_objects = {
+        'InputLayer': PatchedInputLayer,
+        'Conv2D': PatchedConv2D
+    }
+    
+    with tf.keras.utils.custom_object_scope(custom_objects):
+        model = tf.keras.models.load_model(MODEL_PATH, compile=False)
     print("✅ SUCCESS: Legacy model loaded perfectly!")
 except Exception as e:
     print(f"❌ FATAL ERROR: {e}")
@@ -77,7 +72,6 @@ async def read_root():
 
 @app.head("/")
 async def health_check_head():
-    # Responds to Render's health check to prevent 405 errors
     return JSONResponse(content={"status": "online"})
 
 @app.post("/predict")

@@ -1,9 +1,29 @@
 import os
 import uuid
+import json
 import numpy as np
-import tensorflow as tf
-import tf_keras as keras
 
+# --- THE MONKEYPATCH: This MUST happen before importing Keras ---
+import tf_keras.backend as K
+from tf_keras.layers import InputLayer
+
+# We are literally rewriting the internal function that is crashing
+def fixed_get_input_shape(self):
+    if hasattr(self, '_batch_input_shape'):
+        shape = self._batch_input_shape
+        if isinstance(shape, str):
+            try:
+                return json.loads(shape)
+            except:
+                return [None, 224, 224, 3]
+        return shape
+    return None
+
+# Injecting the fix into the library itself
+InputLayer.get_input_shape = fixed_get_input_shape
+# -------------------------------------------------------------
+
+import tf_keras as keras
 from fastapi import FastAPI, File, UploadFile, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,75 +32,24 @@ import uvicorn
 
 app = FastAPI()
 
-# FOLDER SETUP
 UPLOAD_FOLDER = "uploads"
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 app.mount("/static", StaticFiles(directory=UPLOAD_FOLDER), name="static")
 
-# --- THE UNIVERSAL CONFIG SCRUBBER ---
-def clean_config(config):
-    if not isinstance(config, dict):
-        return config
-    
-    # Kill Keras 3 specific keys
-    for key in ['batch_shape', 'optional', 'registered_name', 'module']:
-        config.pop(key, None)
-    
-    # Convert DTypePolicy dict to a simple string
-    if 'dtype' in config and isinstance(config['dtype'], dict):
-        config['dtype'] = config['dtype'].get('config', {}).get('name', 'float32')
-        
-    # Deep clean nested structures
-    for key, value in config.items():
-        if isinstance(value, dict):
-            config[key] = clean_config(value)
-    return config
-
-# --- THE FAULT-TOLERANT LAYER PROXY ---
-class UniversalLayerProxy:
-    def get_layer(self, name):
-        # Try standard layers first, then preprocessing
-        layer_cls = getattr(keras.layers, name, None)
-        if layer_cls is None:
-            layer_cls = getattr(keras.layers.experimental.preprocessing, name, None)
-        
-        if layer_cls is None or not isinstance(layer_cls, type):
-            return None
-            
-        class SafeLayer(layer_cls):
-            @classmethod
-            def from_config(cls, config):
-                return super(SafeLayer, cls).from_config(clean_config(config))
-        return SafeLayer
-
 MODEL_PATH = "legacy_model.h5"
 
-print("🚀 Starting server with Fault-Tolerant Layer Proxy...")
+print("🚀 Starting server with Global Monkeypatch...")
 try:
-    # A massive list to catch everything. If it doesn't exist, it's ignored.
-    layer_names = [
-        'InputLayer', 'Conv2D', 'DepthwiseConv2D', 'BatchNormalization', 
-        'ReLU', 'MaxPooling2D', 'GlobalAveragePooling2D', 'Dense', 
-        'Dropout', 'Flatten', 'ZeroPadding2D', 'Add', 'Rescale', 'Activation',
-        'Resizing', 'Normalization'
-    ]
-    
-    proxy = UniversalLayerProxy()
-    custom_objects = {}
-    for name in layer_names:
-        patched = proxy.get_layer(name)
-        if patched:
-            custom_objects[name] = patched
-    
-    with keras.utils.custom_object_scope(custom_objects):
-        model = keras.models.load_model(MODEL_PATH, compile=False)
-    print("✅ SUCCESS: Model loaded perfectly!")
+    # Now that we've rewritten the internal code, it should load normally
+    model = keras.models.load_model(MODEL_PATH, compile=False)
+    print("✅ SUCCESS: Model loaded!")
 except Exception as e:
     print(f"❌ FATAL ERROR: {e}")
+    import traceback
+    traceback.print_exc()
     model = None
 
-# --- API LOGIC ---
 CLASS_NAMES = ['Early Blight', 'Healthy', 'Leaf Curl']
 
 @app.get("/")

@@ -1,6 +1,7 @@
 fastapi
 uvicorn
-python-multipart
 pillow
 numpy
 tflite-runtime
+opencv-python-headless
+python-multipart

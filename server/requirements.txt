@@ -2,7 +2,6 @@ fastapi
 uvicorn
 pillow
 numpy
---index-url https://google-coral.github.io/py-repo/
-tflite-runtime
+tensorflow-cpu>=2.15.0
 opencv-python-headless
 python-multipart

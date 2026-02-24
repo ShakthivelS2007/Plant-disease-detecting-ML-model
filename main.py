@@ -1,10 +1,10 @@
 import os
-# MUST be the first thing in the file
-os.environ["TF_USE_LEGACY_KERAS"] = "1"
-
 import uuid
 import numpy as np
 import tensorflow as tf
+# This is the dedicated legacy engine
+import tf_keras as keras 
+
 from fastapi import FastAPI, File, UploadFile, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -13,25 +13,23 @@ import uvicorn
 
 app = FastAPI()
 
-# --- FOLDER SETUP ---
+# FOLDER SETUP
 UPLOAD_FOLDER = "uploads"
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 app.mount("/static", StaticFiles(directory=UPLOAD_FOLDER), name="static")
 
-# --- MODEL LOADING ---
 MODEL_PATH = "legacy_model.h5"
 
-print("🚀 Starting server with Official Legacy Bridge...")
+print("🚀 Starting server with Dedicated Legacy Keras Engine...")
 try:
-    # With the env var set, this uses the old h5 engine automatically
-    model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-    print("✅ SUCCESS: Model loaded perfectly!")
+    # Use the keras (tf_keras) object directly
+    model = keras.models.load_model(MODEL_PATH, compile=False)
+    print("✅ SUCCESS: Model loaded using tf_keras!")
 except Exception as e:
     print(f"❌ FATAL ERROR: {e}")
     model = None
 
-# --- API LOGIC ---
 CLASS_NAMES = ['Early Blight', 'Healthy', 'Leaf Curl']
 
 @app.get("/")
@@ -42,12 +40,10 @@ async def read_root():
 async def predict(request: Request, file: UploadFile = File(...)):
     if model is None:
         return JSONResponse(status_code=500, content={"error": "Model not loaded."})
-    
     try:
         file_ext = file.filename.split(".")[-1]
         unique_name = f"{uuid.uuid4()}.{file_ext}"
         img_path = os.path.join(UPLOAD_FOLDER, unique_name)
-        
         with open(img_path, "wb") as f:
             f.write(await file.read())
 
@@ -55,6 +51,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
         img_array = np.array(img) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
 
+        # Make sure to predict using the loaded model
         predictions = model.predict(img_array)
         label = CLASS_NAMES[np.argmax(predictions[0])]
         confidence = float(np.max(predictions[0]))

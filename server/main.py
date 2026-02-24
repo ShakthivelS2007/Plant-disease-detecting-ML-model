@@ -1,7 +1,9 @@
 import os
 import io
 import gc
+import base64
 import numpy as np
+import cv2
 import tflite_runtime.interpreter as tflite
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
@@ -9,93 +11,107 @@ from PIL import Image
 
 app = FastAPI()
 
-# --- CONFIGURATION ---
-MODEL_PATH = "model.tflite"
-# Ensure these match the order your model was trained on!
+# --- SMART PATH LOGIC ---
+# This ensures Render finds the file regardless of the 'Root Directory' setting
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "model.tflite")
 CLASS_NAMES = ['Early Blight', 'Healthy', 'Leaf Curl']
 
-# --- MODEL INITIALIZATION ---
-def get_interpreter():
-    """Load the TFLite model and allocate tensors."""
-    interpreter = tflite.Interpreter(model_path=MODEL_PATH)
-    interpreter.allocate_tensors()
-    return interpreter
-
-# --- PREDICTION LOGIC ---
-def run_inference(img_array):
-    interpreter = get_interpreter()
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
-
-    # Ensure input matches model's expected shape/type
-    interpreter.set_tensor(input_details[0]['index'], img_array)
-    interpreter.invoke()
-
-    # Extract results
-    output_data = interpreter.get_tensor(output_details[0]['index'])
-    return output_data[0]
-
-# --- API ENDPOINTS ---
+def generate_heatmap_base64(img_array):
+    """
+    Creates a visual heatmap highlighting high-contrast areas.
+    """
+    try:
+        # Convert to 0-255 uint8 image
+        raw_img = (img_array[0] * 255).astype(np.uint8)
+        
+        # Simple Saliency Map using Sobel gradients
+        gray = cv2.cvtColor(raw_img, cv2.COLOR_RGB2GRAY)
+        grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        abs_grad = cv2.convertScaleAbs(cv2.addWeighted(grad_x, 0.5, grad_y, 0.5, 0))
+        
+        # Apply Jet Color Map (Red = Focus areas)
+        heatmap = cv2.applyColorMap(abs_grad, cv2.COLORMAP_JET)
+        
+        # Combine original + heatmap
+        result_img = cv2.addWeighted(raw_img, 0.6, heatmap, 0.4, 0)
+        
+        # Encode to Base64
+        _, buffer = cv2.imencode('.jpg', result_img)
+        return base64.b64encode(buffer).decode('utf-8')
+    except Exception:
+        return ""
 
 @app.get("/")
-async def health_check():
-    """Confirm the server is up and the model file is accessible."""
+async def health():
+    """Diagnostic check to verify model status on Render."""
     exists = os.path.exists(MODEL_PATH)
+    file_info = "Not Found"
+    if exists:
+        size = os.path.getsize(MODEL_PATH)
+        file_info = f"Found ({size} bytes)"
+        # Check first 4 bytes for TFL3 signature
+        with open(MODEL_PATH, 'rb') as f:
+            header = f.read(4)
+            file_info += f" | Header: {header}"
+            
     return {
         "status": "online",
-        "model_found": exists,
-        "engine": "TFLite Runtime",
-        "root_directory": "server"
+        "model_file": file_info,
+        "path_searched": MODEL_PATH,
+        "classes": CLASS_NAMES
     }
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
+    interpreter = None
     try:
-        # 1. Read the uploaded file
+        # 1. Process Image
         content = await file.read()
-        
-        # 2. Preprocess the image
         with Image.open(io.BytesIO(content)) as img:
-            # Convert to RGB (removes Alpha channel if it's a PNG)
-            img = img.convert("RGB")
-            # Resize to the input size your model expects (usually 224x224)
-            img = img.resize((224, 224))
-            
-            # Convert to Numpy and Normalize
+            img = img.convert("RGB").resize((224, 224))
             img_array = np.array(img).astype(np.float32) / 255.0
-            # Add batch dimension: (224, 224, 3) -> (1, 224, 224, 3)
             img_array = np.expand_dims(img_array, axis=0)
 
-        # 3. Run the TFLite Inference
-        predictions = run_inference(img_array)
+        # 2. Safety Check
+        if not os.path.exists(MODEL_PATH):
+            return JSONResponse(status_code=404, content={"error": "model.tflite not found at " + MODEL_PATH})
+
+        # 3. Load TFLite Model
+        # Using the absolute path ensures no 'Identifier' errors from reading wrong files
+        interpreter = tflite.Interpreter(model_path=MODEL_PATH)
+        interpreter.allocate_tensors()
         
-        # 4. Process Results
-        predicted_index = np.argmax(predictions)
-        confidence = float(predictions[predicted_index])
+        input_details = interpreter.get_input_details()
+        output_details = interpreter.get_output_details()
         
-        response_data = {
-            "prediction": CLASS_NAMES[predicted_index],
+        # 4. Inference
+        interpreter.set_tensor(input_details[0]['index'], img_array)
+        interpreter.invoke()
+        predictions = interpreter.get_tensor(output_details[0]['index'])[0]
+        
+        idx = np.argmax(predictions)
+        confidence = float(predictions[idx])
+        
+        # 5. Generate Heatmap
+        heatmap_string = generate_heatmap_base64(img_array)
+
+        return {
+            "prediction": CLASS_NAMES[idx],
             "confidence": f"{confidence * 100:.2f}%",
-            "all_scores": {
-                name: f"{float(score) * 100:.2f}%" 
-                for name, score in zip(CLASS_NAMES, predictions)
-            }
+            "heatmap": heatmap_string
         }
 
-        # 5. Manual Garbage Collection (Crucial for 512MB RAM)
-        del img_array
-        del content
-        gc.collect()
-
-        return response_data
-
     except Exception as e:
-        return JSONResponse(
-            status_code=500, 
-            content={"error": "Prediction failed", "details": str(e)}
-        )
+        return JSONResponse(status_code=500, content={"error": "Inference Error", "details": str(e)})
+    finally:
+        if interpreter:
+            del interpreter
+        gc.collect()
 
 if __name__ == "__main__":
     import uvicorn
+    import os
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)

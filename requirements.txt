@@ -4,6 +4,7 @@ gunicorn==21.2.0
 python-multipart==0.0.7
 tensorflow-cpu==2.16.1
 tf-keras==2.16.0
+h5py==3.10.0
 numpy==1.26.4
 opencv-python-headless==4.9.0.80
 Pillow==10.2.0

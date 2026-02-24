@@ -7,94 +7,56 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import uvicorn
-import traceback
 
-# --- THE SLEDGEHAMMER REPAIR PATCH ---
-from tensorflow.keras import layers
-
-def strip_keras3(kwargs):
-    """The Sledgehammer: Wipe all problematic metadata to force Keras 2 defaults"""
-    # These three are the primary causes of 'as_list' and 'DTypePolicy' errors
-    kwargs.pop('batch_input_shape', None)
-    kwargs.pop('batch_shape', None)
-    kwargs.pop('dtype', None)
-    
-    # Remove modern Keras 3 noise
-    kwargs.pop('optional', None)
-    kwargs.pop('registered_name', None)
-    return kwargs
-
-def patch_layer(layer_class):
-    """Factory to create Keras 2 compatible layers by ignoring bad config"""
-    class PatchedLayer(layer_class):
-        def __init__(self, *args, **kwargs):
-            # We strip the config before it ever reaches the Keras Layer __init__
-            super().__init__(*args, **strip_keras3(kwargs))
-    return PatchedLayer
-
-# 1. IMPORT HEATMAP LOGIC
-try:
-    from test_heatmap import heatmap
-except ImportError:
-    heatmap = None
+# --- NO MORE PATCHES NEEDED WITH TF 2.15 ---
 
 app = FastAPI()
 
-# 2. FOLDER SETUP
+# 1. FOLDER SETUP
 UPLOAD_FOLDER = "uploads"
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
+
+# Ensure the static files are mounted so you can view images/heatmaps in browser
 app.mount("/static", StaticFiles(directory=UPLOAD_FOLDER), name="static")
 
-# 3. MODEL LOADING
+# 2. MODEL LOADING
+# We use .h5 format. With TF 2.15, this should load without the 'as_list' error.
 MODEL_PATH = "legacy_model.h5"
 
-print("Starting server with Sledgehammer Repair Scope...")
+print("Loading model using TensorFlow 2.15 compatibility mode...")
 try:
-    # Comprehensive layer list for CNN/MobileNet architectures
-    layer_types = [
-        'InputLayer', 'Conv2D', 'DepthwiseConv2D', 'BatchNormalization', 
-        'ReLU', 'MaxPooling2D', 'GlobalAveragePooling2D', 'Dense', 
-        'Dropout', 'Flatten', 'ZeroPadding2D', 'Add', 'Rescale', 'Activation'
-    ]
-    
-    custom_objects = {}
-    for name in layer_types:
-        if hasattr(layers, name):
-            custom_objects[name] = patch_layer(getattr(layers, name))
-    
-    # Load model with compile=False to avoid optimizer-related version crashes
-    with tf.keras.utils.custom_object_scope(custom_objects):
-        model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-    
+    # compile=False is the key to avoiding optimizer/version errors
+    model = tf.keras.models.load_model(MODEL_PATH, compile=False)
     print("✅ SUCCESS: Legacy model loaded perfectly!")
-
 except Exception as e:
     print(f"❌ FATAL ERROR: {e}")
-    traceback.print_exc()
     model = None
 
-# 4. API LOGIC
+# 3. CLASS NAMES
 CLASS_NAMES = ['Early Blight', 'Healthy', 'Leaf Curl']
 
+# 4. API ROUTES
 @app.get("/")
 async def read_root():
     return {
         "status": "online", 
         "model_loaded": model is not None,
-        "engine": "Sledgehammer Patch"
+        "message": "Plant Disease Detection API is running"
     }
 
 @app.head("/")
 async def health_check_head():
+    # Render uses HEAD requests to check if your app is alive
     return JSONResponse(content={"status": "online"})
 
 @app.post("/predict")
 async def predict(request: Request, file: UploadFile = File(...)):
     if model is None:
-        return JSONResponse(status_code=500, content={"error": "Model not loaded."})
+        return JSONResponse(status_code=500, content={"error": "Model not loaded on server."})
     
     try:
+        # Save uploaded file
         file_ext = file.filename.split(".")[-1]
         unique_name = f"{uuid.uuid4()}.{file_ext}"
         img_path = os.path.join(UPLOAD_FOLDER, unique_name)
@@ -102,7 +64,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
         with open(img_path, "wb") as f:
             f.write(await file.read())
 
-        # Standard Preprocessing
+        # Preprocessing (MobileNet/Standard CNN standard)
         img = Image.open(img_path).convert("RGB").resize((224, 224))
         img_array = np.array(img) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
@@ -115,7 +77,8 @@ async def predict(request: Request, file: UploadFile = File(...)):
 
         return {
             "prediction": label,
-            "confidence": f"{confidence * 100:.2f}%"
+            "confidence": f"{confidence * 100:.2f}%",
+            "image_url": f"{str(request.base_url).rstrip('/')}/static/{unique_name}"
         }
 
     except Exception as e:

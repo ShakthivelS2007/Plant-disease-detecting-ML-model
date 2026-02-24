@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Request # Added Request
 from fastapi.middleware.cors import CORSMiddleware
 import tensorflow as tf
 import numpy as np
@@ -10,6 +10,10 @@ import uuid
 from fastapi.staticfiles import StaticFiles
 import time
 
+# --- RENDER FIX: Disable GPU to save RAM ---
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
 app = FastAPI()
 
 UPLOAD_FOLDER = "uploads"
@@ -19,12 +23,15 @@ def clean_uploads():
     now = time.time()
     for file in os.listdir(UPLOAD_FOLDER):
         path = os.path.join(UPLOAD_FOLDER, file)
+        # Check if file is older than 10 mins
         if os.stat(path).st_mtime < now - 600:
-            os.remove(path)
+            try:
+                os.remove(path)
+            except:
+                pass
 
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-# Connection with Flutter
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -33,10 +40,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load .h5 model
+# Load model (Ensure this file is in your GitHub repo root)
 model = tf.keras.models.load_model("tomato_model_v3_field_ready.h5")
 
-# Class names 
 CLASS_NAMES = ['Early Blight', 'Healthy', 'Leaf Curl']
 
 @app.get("/")
@@ -44,23 +50,20 @@ def home():
     return {"message": "Plant Detection API Running"}
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict(request: Request, file: UploadFile = File(...)): # Added request here
     try:
         clean_uploads()
-        # Read image
         contents = await file.read()
 
-        # Create unique filename
         filename = f"{uuid.uuid4()}.jpg"
         image_path = os.path.join(UPLOAD_FOLDER, filename)
 
-        # Save image to disk
         with open(image_path, "wb") as f:
             f.write(contents)
         
         heatmap_data = heatmap(image_path, model)
 
-        #Preprocess
+        # Preprocess
         image = Image.open(io.BytesIO(contents)).convert("RGB")
         image = image.resize((224, 224)) 
         img_array = np.array(image) / 255.0
@@ -72,21 +75,9 @@ async def predict(file: UploadFile = File(...)):
         confidence = float(np.max(predictions))
 
         REMEDIES = [
-            [
-                "Remove infected leaves immediately.",
-                "Use copper based fungicide (eg: chlorothalonil, mancozeb, azoxystrobin, etc).",
-                "Ensure there is proper air circulation between plants.",
-            ],
-            [
-                "Continue watering schedule.",
-                "Ensure good sunlight exposure.",
-                "Mointor early signs of pest.",
-            ],
-            [
-                "Control whitefiles using neem oil.",
-                "Remove infected plants to prevent spread.",
-                "Maintain proper plant nutrition.",
-            ],
+            ["Remove infected leaves immediately.", "Use copper based fungicide.", "Ensure proper air circulation."],
+            ["Continue watering schedule.", "Ensure good sunlight exposure.", "Monitor early signs of pest."],
+            ["Control whiteflies using neem oil.", "Remove infected plants.", "Maintain proper plant nutrition."]
         ]
 
         WIKI_PAGES = [
@@ -95,17 +86,19 @@ async def predict(file: UploadFile = File(...)):
             "https://en.wikipedia.org/wiki/Tomato_yellow_leaf_curl_virus",
         ]
 
+        # --- RENDER FIX: Dynamic Heatmap URL ---
+        # We replace the local IP (192.168.1.5) with the actual URL of your Render service
+        base_url = str(request.base_url).rstrip("/")
+        heatmap_url = f"{base_url}/uploads/{heatmap_data}"
+
         return {
             "success": True,
             "prediction": CLASS_NAMES[predicted_index],
             "confidence": round(confidence * 100, 2),
             "remedies": REMEDIES[predicted_index],
             "wikipage": WIKI_PAGES[predicted_index],
-            "heatmap": f"http://192.168.1.5:8000/uploads/{heatmap_data}",
+            "heatmap": heatmap_url,
         }
 
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return {"success": False, "error": str(e)}

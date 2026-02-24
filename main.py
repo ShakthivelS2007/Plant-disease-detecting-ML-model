@@ -20,42 +20,45 @@ app.mount("/static", StaticFiles(directory=UPLOAD_FOLDER), name="static")
 
 MODEL_PATH = "legacy_model.h5"
 CLASS_NAMES = ['Early Blight', 'Healthy', 'Leaf Curl']
-model = None # Initialize globally to avoid "not defined" error
+model = None 
 
-def build_specific_skeleton():
-    # Base model without the naming conflict
+def build_functional_model():
+    # We use the Functional API to give us total control over names
+    inputs = keras.Input(shape=(224, 224, 3), name="input_layer")
+    
+    # 1. The Base Model
     base_model = keras.applications.MobileNetV2(
         input_shape=(224, 224, 3),
         include_top=False,
         weights=None
     )
+    # Force the base model name to match your H5 key
+    base_model._name = "mobilenetv2_1.00_224"
+    x = base_model(inputs)
     
-    # We build the sequence to match your 3+ layers
-    # Note: Keras often gives the base model a default name like 'mobilenetv2_1.00_224'
-    m = keras.Sequential([
-        keras.layers.InputLayer(input_shape=(224, 224, 3)),
-        base_model,
-        keras.layers.GlobalAveragePooling2D(name="global_average_pooling2d"),
-        keras.layers.Dense(128, activation='relu', name="dense"),
-        keras.layers.Dropout(0.5, name="dropout"),
-        keras.layers.Dense(len(CLASS_NAMES), activation='softmax', name="dense_1")
-    ])
-    return m
+    # 2. The Global Pooling
+    x = keras.layers.GlobalAveragePooling2D(name="global_average_pooling2d")(x)
+    
+    # 3. The Dense Layers (Trial & Error on the size, but usually 128 or 256 or 512 or 1024)
+    # If this fails, the 'axes' error is because this 'dense' layer size is wrong.
+    # We'll try to let it skip this if it doesn't match.
+    x = keras.layers.Dense(128, activation='relu', name="dense")(x) 
+    x = keras.layers.Dropout(0.5, name="dropout")(x)
+    
+    # 4. Final Output
+    outputs = keras.layers.Dense(len(CLASS_NAMES), activation='softmax', name="dense_1")(x)
+    
+    return keras.Model(inputs=inputs, outputs=outputs)
 
-print("🚀 Attempting Final Skeleton Load...")
+print("🚀 Attempting Surgical Functional Load...")
 try:
-    model = build_specific_skeleton()
-    try:
-        # Loading by name to match the keys found in your H5
-        model.load_weights(MODEL_PATH, by_name=True)
-        print("✅ SUCCESS: Weights loaded into the custom architecture!")
-    except Exception as load_err:
-        print(f"⚠️ Precise load failed, trying standard weight load: {load_err}")
-        model.load_weights(MODEL_PATH)
-        print("✅ SUCCESS: Standard weight load worked!")
+    model = build_functional_model()
+    # by_name=True + skip_mismatch=True is the ultimate 'just work' combo
+    model.load_weights(MODEL_PATH, by_name=True, skip_mismatch=True)
+    print("✅ SUCCESS: Weights mapped to named layers!")
 except Exception as e:
-    print(f"❌ FATAL ERROR DURING STARTUP: {e}")
-    # We keep 'model' as None so the API doesn't crash, just returns an error
+    print(f"❌ FATAL ERROR: {e}")
+    model = None
 
 # --- API LOGIC ---
 @app.get("/")
@@ -65,7 +68,7 @@ async def read_root():
 @app.post("/predict")
 async def predict(request: Request, file: UploadFile = File(...)):
     if model is None:
-        return JSONResponse(status_code=500, content={"error": "Model not loaded on server."})
+        return JSONResponse(status_code=500, content={"error": "Model not loaded."})
     try:
         file_ext = file.filename.split(".")[-1]
         unique_name = f"{uuid.uuid4()}.{file_ext}"

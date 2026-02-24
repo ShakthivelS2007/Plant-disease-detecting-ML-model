@@ -1,104 +1,101 @@
 import os
-import uuid
 import io
 import gc
 import numpy as np
-import tensorflow as tf
-import tf_keras as keras
-import uvicorn
-from fastapi import FastAPI, File, UploadFile, Request
+import tflite_runtime.interpreter as tflite
+from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
 app = FastAPI()
 
-# FOLDER SETUP
-UPLOAD_FOLDER = "uploads"
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
-app.mount("/static", StaticFiles(directory=UPLOAD_FOLDER), name="static")
-
-MODEL_PATH = "legacy_model.h5"
+# --- CONFIGURATION ---
+MODEL_PATH = "model.tflite"
+# Ensure these match the order your model was trained on!
 CLASS_NAMES = ['Early Blight', 'Healthy', 'Leaf Curl']
-model = None 
 
-def build_functional_model():
-    """Builds the skeleton based on the layer names found in your H5 file."""
-    inputs = keras.Input(shape=(224, 224, 3))
-    
-    # Base MobileNetV2
-    base_model = keras.applications.MobileNetV2(
-        input_shape=(224, 224, 3), 
-        include_top=False, 
-        weights=None
-    )
-    # This name must match the key found in your H5 metadata
-    base_model._name = "mobilenetv2_1.00_224"
-    x = base_model(inputs)
-    
-    # Matching the 'h5_layers' you shared earlier
-    x = keras.layers.GlobalAveragePooling2D(name="global_average_pooling2d")(x)
-    x = keras.layers.Dense(128, activation='relu', name="dense")(x)
-    x = keras.layers.Dropout(0.5, name="dropout")(x)
-    outputs = keras.layers.Dense(len(CLASS_NAMES), activation='softmax', name="dense_1")(x)
-    
-    return keras.Model(inputs=inputs, outputs=outputs)
+# --- MODEL INITIALIZATION ---
+def get_interpreter():
+    """Load the TFLite model and allocate tensors."""
+    interpreter = tflite.Interpreter(model_path=MODEL_PATH)
+    interpreter.allocate_tensors()
+    return interpreter
 
-print("🚀 BOOTING: Loading model into memory...")
-try:
-    # 1. Clear any existing background sessions
-    keras.backend.clear_session()
-    
-    # 2. Build and Load
-    model = build_functional_model()
-    # by_name=True is mandatory for skip_mismatch
-    model.load_weights(MODEL_PATH, by_name=True, skip_mismatch=True)
-    
-    print("✅ SUCCESS: Model is ready.")
-except Exception as e:
-    print(f"❌ CRITICAL LOAD ERROR: {e}")
+# --- PREDICTION LOGIC ---
+def run_inference(img_array):
+    interpreter = get_interpreter()
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+
+    # Ensure input matches model's expected shape/type
+    interpreter.set_tensor(input_details[0]['index'], img_array)
+    interpreter.invoke()
+
+    # Extract results
+    output_data = interpreter.get_tensor(output_details[0]['index'])
+    return output_data[0]
+
+# --- API ENDPOINTS ---
 
 @app.get("/")
-async def read_root():
-    return {"status": "online", "model_loaded": model is not None}
+async def health_check():
+    """Confirm the server is up and the model file is accessible."""
+    exists = os.path.exists(MODEL_PATH)
+    return {
+        "status": "online",
+        "model_found": exists,
+        "engine": "TFLite Runtime",
+        "root_directory": "server"
+    }
 
 @app.post("/predict")
-async def predict(request: Request, file: UploadFile = File(...)):
-    if model is None:
-        return JSONResponse(status_code=500, content={"error": "Model not loaded."})
-    
+async def predict(file: UploadFile = File(...)):
     try:
-        # Read file into memory buffer
+        # 1. Read the uploaded file
         content = await file.read()
         
-        # Optimized Image Processing
+        # 2. Preprocess the image
         with Image.open(io.BytesIO(content)) as img:
-            img = img.convert("RGB").resize((224, 224))
+            # Convert to RGB (removes Alpha channel if it's a PNG)
+            img = img.convert("RGB")
+            # Resize to the input size your model expects (usually 224x224)
+            img = img.resize((224, 224))
+            
+            # Convert to Numpy and Normalize
             img_array = np.array(img).astype(np.float32) / 255.0
+            # Add batch dimension: (224, 224, 3) -> (1, 224, 224, 3)
             img_array = np.expand_dims(img_array, axis=0)
 
-        # Force CPU and predict with small batch to save RAM
-        with tf.device('/cpu:0'):
-            predictions = model.predict(img_array, batch_size=1, verbose=0)
-            
-        idx = np.argmax(predictions[0])
-        label = CLASS_NAMES[idx]
-        confidence = float(predictions[0][idx])
+        # 3. Run the TFLite Inference
+        predictions = run_inference(img_array)
+        
+        # 4. Process Results
+        predicted_index = np.argmax(predictions)
+        confidence = float(predictions[predicted_index])
+        
+        response_data = {
+            "prediction": CLASS_NAMES[predicted_index],
+            "confidence": f"{confidence * 100:.2f}%",
+            "all_scores": {
+                name: f"{float(score) * 100:.2f}%" 
+                for name, score in zip(CLASS_NAMES, predictions)
+            }
+        }
 
-        # --- AGGRESSIVE CLEANUP ---
-        # Explicitly delete heavy objects and trigger Garbage Collection
+        # 5. Manual Garbage Collection (Crucial for 512MB RAM)
         del img_array
         del content
-        gc.collect() 
+        gc.collect()
 
-        return {
-            "prediction": label, 
-            "confidence": f"{confidence * 100:.2f}%"
-        }
+        return response_data
+
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(
+            status_code=500, 
+            content={"error": "Prediction failed", "details": str(e)}
+        )
 
 if __name__ == "__main__":
+    import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)

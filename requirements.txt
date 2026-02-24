@@ -4,9 +4,8 @@ uvicorn[standard]==0.27.1
 gunicorn==21.2.0
 python-multipart==0.0.7
 
-# Machine Learning (Pinned for .h5 compatibility)
+# Machine Learning (Keras 3 Compatible)
 tensorflow-cpu==2.16.1
-tf-keras==2.16.0
 numpy==1.26.4
 
 # Image Processing

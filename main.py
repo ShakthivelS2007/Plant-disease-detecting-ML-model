@@ -1,104 +1,93 @@
-from fastapi import FastAPI, File, UploadFile, Request # Added Request
-from fastapi.middleware.cors import CORSMiddleware
+import os
+# MANDATORY: Must be set before importing tensorflow/keras
+os.environ['TF_USE_LEGACY_KERAS'] = '1'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
 import tensorflow as tf
+import tf_keras as keras
 import numpy as np
+import uvicorn
+from fastapi import FastAPI, File, UploadFile, Request
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import io
-from test_heatmap import heatmap
-import os
 import uuid
-from fastapi.staticfiles import StaticFiles
-import time
 
-# --- RENDER FIX: Disable GPU to save RAM ---
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+# Import your heatmap function
+from test_heatmap import heatmap
 
 app = FastAPI()
 
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# Create and mount the uploads folder so images are accessible via URL
+if not os.path.exists("uploads"):
+    os.makedirs("uploads")
+app.mount("/static", StaticFiles(directory="uploads"), name="static")
 
-def clean_uploads():
-    now = time.time()
-    for file in os.listdir(UPLOAD_FOLDER):
-        path = os.path.join(UPLOAD_FOLDER, file)
-        # Check if file is older than 10 mins
-        if os.stat(path).st_mtime < now - 600:
-            try:
-                os.remove(path)
-            except:
-                pass
-
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Load model (Ensure this file is in your GitHub repo root)
-model = tf.keras.models.load_model("tomato_model_v3_field_ready.h5")
+# 1. Load the model using the Legacy Keras engine
+MODEL_PATH = "tomato_model_v3_field_ready.h5"
+model = keras.models.load_model(MODEL_PATH)
 
 CLASS_NAMES = ['Early Blight', 'Healthy', 'Leaf Curl']
 
+REMEDIES = {
+    'Early Blight': 'Remove infected leaves, use copper-based fungicides, and avoid overhead watering.',
+    'Healthy': 'Your plant looks great! Keep maintaining consistent watering and sunlight.',
+    'Leaf Curl': 'Check for aphids (vectors), use neem oil, or plant resistant varieties next season.'
+}
+
+WIKI_PAGES = {
+    'Early Blight': 'https://en.wikipedia.org/wiki/Alternaria_solani',
+    'Healthy': 'https://en.wikipedia.org/wiki/Solanum_lycopersicum',
+    'Leaf Curl': 'https://en.wikipedia.org/wiki/Leaf_prochlorperazine'
+}
+
 @app.get("/")
-def home():
-    return {"message": "Plant Detection API Running"}
+async def read_root():
+    return {"message": "Plant Disease Detection API is Running"}
 
 @app.post("/predict")
-async def predict(request: Request, file: UploadFile = File(...)): # Added request here
+async def predict(request: Request, file: UploadFile = File(...)):
     try:
-        clean_uploads()
-        contents = await file.read()
-
-        filename = f"{uuid.uuid4()}.jpg"
-        image_path = os.path.join(UPLOAD_FOLDER, filename)
-
-        with open(image_path, "wb") as f:
-            f.write(contents)
+        # 2. Save the incoming file with a unique name
+        file_extension = file.filename.split(".")[-1]
+        unique_filename = f"{uuid.uuid4()}.{file_extension}"
+        temp_image_path = os.path.join("uploads", unique_filename)
         
-        heatmap_data = heatmap(image_path, model)
+        with open(temp_image_path, "wb") as f:
+            f.write(await file.read())
 
-        # Preprocess
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
-        image = image.resize((224, 224)) 
-        img_array = np.array(image) / 255.0
+        # 3. Standard Prediction Logic
+        img = Image.open(temp_image_path).resize((224, 224))
+        img_array = np.array(img) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
 
-        # Predict
         predictions = model.predict(img_array)
-        predicted_index = int(np.argmax(predictions))
-        confidence = float(np.max(predictions))
+        predicted_index = np.argmax(predictions[0])
+        confidence = float(np.max(predictions[0]))
+        label = CLASS_NAMES[predicted_index]
 
-        REMEDIES = [
-            ["Remove infected leaves immediately.", "Use copper based fungicide.", "Ensure proper air circulation."],
-            ["Continue watering schedule.", "Ensure good sunlight exposure.", "Monitor early signs of pest."],
-            ["Control whiteflies using neem oil.", "Remove infected plants.", "Maintain proper plant nutrition."]
-        ]
+        # 4. Generate Heatmap (Returns just the filename)
+        heatmap_filename = heatmap(temp_image_path, model)
 
-        WIKI_PAGES = [
-            "https://en.wikipedia.org/wiki/Alternaria_solani",
-            "None",
-            "https://en.wikipedia.org/wiki/Tomato_yellow_leaf_curl_virus",
-        ]
-
-        # --- RENDER FIX: Dynamic Heatmap URL ---
-        # We replace the local IP (192.168.1.5) with the actual URL of your Render service
-        base_url = str(request.base_url).rstrip("/")
-        heatmap_url = f"{base_url}/uploads/{heatmap_data}"
+        # 5. Build dynamic URLs for the images
+        base_url = str(request.base_url).rstrip('/')
+        heatmap_url = f"{base_url}/static/{heatmap_filename}" if heatmap_filename else None
+        original_url = f"{base_url}/static/{unique_filename}"
 
         return {
-            "success": True,
-            "prediction": CLASS_NAMES[predicted_index],
-            "confidence": round(confidence * 100, 2),
-            "remedies": REMEDIES[predicted_index],
-            "wikipage": WIKI_PAGES[predicted_index],
-            "heatmap": heatmap_url,
+            "prediction": label,
+            "confidence": f"{confidence * 100:.2f}%",
+            "remedy": REMEDIES.get(label, "No remedy info available."),
+            "wiki_url": WIKI_PAGES.get(label, "#"),
+            "heatmap_url": heatmap_url,
+            "original_image_url": original_url
         }
 
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+

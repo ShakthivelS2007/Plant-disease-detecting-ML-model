@@ -4,5 +4,5 @@ fastapi
 uvicorn
 python-multipart
 pillow
-numpy
+numpy<2.0.0
 gunicorn

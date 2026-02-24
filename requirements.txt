@@ -1,16 +1,9 @@
-# Web Framework
 fastapi==0.110.0
 uvicorn[standard]==0.27.1
 gunicorn==21.2.0
 python-multipart==0.0.7
-
-# Machine Learning (Keras 3 Compatible)
 tensorflow-cpu==2.16.1
+tf-keras==2.16.0
 numpy==1.26.4
-
-# Image Processing
 opencv-python-headless==4.9.0.80
 Pillow==10.2.0
-
-# Utilities
-requests==2.31.0

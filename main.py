@@ -1,62 +1,49 @@
 import os
-import uuid
-import numpy as np
-
-# MANDATORY: Force the legacy engine before importing anything else
+# Must be at the VERY top
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['TF_USE_LEGACY_KERAS'] = '1'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 import tensorflow as tf
-import tf_keras as keras  # This is the secret to fixing the 'Dense' error
+import tf_keras as keras
+import numpy as np
 from fastapi import FastAPI, File, UploadFile, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import uvicorn
+import uuid
 
-# Import your heatmap function from test_heatmap.py
+# Import your heatmap function
 from test_heatmap import heatmap
 
 app = FastAPI()
 
-# Setup folder for images
+# Folder setup
 UPLOAD_FOLDER = "uploads"
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 app.mount("/static", StaticFiles(directory=UPLOAD_FOLDER), name="static")
 
-# LOAD THE MODEL using the tf_keras engine
+# Load model with a "Safety Net"
 MODEL_PATH = "tomato_model_v3_field_ready.h5"
 try:
-    # compile=False avoids the deserialization errors entirely
+    # compile=False is the strongest way to bypass keyword errors
     model = keras.models.load_model(MODEL_PATH, compile=False)
-    print("Model loaded successfully using tf-keras legacy engine.")
+    print("✅ Model loaded successfully.")
 except Exception as e:
-    print(f"Error loading model: {e}")
-    raise e
-
-CLASS_NAMES = ['Early Blight', 'Healthy', 'Leaf Curl']
-
-REMEDIES = {
-    'Early Blight': 'Remove infected leaves, use copper-based fungicides, and avoid overhead watering.',
-    'Healthy': 'Your plant looks great! Keep maintaining consistent watering and sunlight.',
-    'Leaf Curl': 'Check for aphids, use neem oil, or plant resistant varieties.'
-}
-
-WIKI_PAGES = {
-    'Early Blight': 'https://en.wikipedia.org/wiki/Alternaria_solani',
-    'Healthy': 'https://en.wikipedia.org/wiki/Solanum_lycopersicum',
-    'Leaf Curl': 'https://en.wikipedia.org/wiki/Leaf_prochlorperazine'
-}
+    print(f"❌ Load failed: {e}")
+    model = None
 
 @app.get("/")
-async def read_root():
-    return {"message": "Tomato Disease API is Live"}
+async def root():
+    return {"status": "online", "model_loaded": model is not None}
 
 @app.post("/predict")
 async def predict(request: Request, file: UploadFile = File(...)):
+    if model is None:
+        return JSONResponse(status_code=500, content={"error": "Model not loaded"})
     try:
-        # Save unique file
         file_ext = file.filename.split(".")[-1]
         unique_name = f"{uuid.uuid4()}.{file_ext}"
         img_path = os.path.join(UPLOAD_FOLDER, unique_name)
@@ -64,31 +51,22 @@ async def predict(request: Request, file: UploadFile = File(...)):
         with open(img_path, "wb") as f:
             f.write(await file.read())
 
-        # Preprocess
         img = Image.open(img_path).convert("RGB").resize((224, 224))
         img_array = np.array(img) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
 
-        # Inference using the legacy model object
         predictions = model.predict(img_array)
         idx = np.argmax(predictions[0])
-        label = CLASS_NAMES[idx]
-        confidence = float(np.max(predictions[0]))
-
-        # Heatmap Generation
+        
+        # Heatmap
         heatmap_file = heatmap(img_path, model)
-
-        # Build dynamic URLs
         base_url = str(request.base_url).rstrip('/')
+
         return {
-            "prediction": label,
-            "confidence": f"{confidence * 100:.2f}%",
-            "remedy": REMEDIES.get(label, "N/A"),
-            "wiki_url": WIKI_PAGES.get(label, "#"),
-            "original_image_url": f"{base_url}/static/{unique_name}",
+            "prediction": str(idx), 
+            "confidence": float(np.max(predictions[0])),
             "heatmap_url": f"{base_url}/static/{heatmap_file}" if heatmap_file else None
         }
-
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 

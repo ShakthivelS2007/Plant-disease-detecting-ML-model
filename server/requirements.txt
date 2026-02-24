@@ -1,8 +1,6 @@
-tensorflow>=2.16.1
-tf_keras
 fastapi
 uvicorn
 python-multipart
 pillow
-numpy<2.0.0
-gunicorn
+numpy
+tflite-runtime

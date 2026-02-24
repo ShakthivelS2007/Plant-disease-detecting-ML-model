@@ -1,10 +1,7 @@
-gunicorn
 tensorflow==2.15.0
-tf-keras==2.15.0
 fastapi
 uvicorn
 python-multipart
-Pillow
-numpy
-opencv-python-headless
-h5py
+pillow
+numpy<2.0.0
+gunicorn

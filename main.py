@@ -1,4 +1,8 @@
 import os
+# CRITICAL: This MUST be set before any other imports. 
+# It tells TensorFlow to use the Keras 2 saving/loading logic.
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
 import uuid
 import numpy as np
 import tensorflow as tf
@@ -8,46 +12,41 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import uvicorn
 
-# --- NO MORE PATCHES NEEDED WITH TF 2.15 ---
-
 app = FastAPI()
 
-# 1. FOLDER SETUP
+# --- FOLDER SETUP ---
 UPLOAD_FOLDER = "uploads"
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
-# Ensure the static files are mounted so you can view images/heatmaps in browser
+# Mount the folder so images are accessible via URL
 app.mount("/static", StaticFiles(directory=UPLOAD_FOLDER), name="static")
 
-# 2. MODEL LOADING
-# We use .h5 format. With TF 2.15, this should load without the 'as_list' error.
+# --- MODEL LOADING ---
 MODEL_PATH = "legacy_model.h5"
 
-print("Loading model using TensorFlow 2.15 compatibility mode...")
+print("🚀 Starting server with Official Legacy Bridge...")
 try:
-    # compile=False is the key to avoiding optimizer/version errors
+    # With TF_USE_LEGACY_KERAS=1, this uses the old reliable h5 loader
     model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-    print("✅ SUCCESS: Legacy model loaded perfectly!")
+    print("✅ SUCCESS: Model loaded perfectly!")
 except Exception as e:
     print(f"❌ FATAL ERROR: {e}")
     model = None
 
-# 3. CLASS NAMES
+# --- API LOGIC ---
 CLASS_NAMES = ['Early Blight', 'Healthy', 'Leaf Curl']
 
-# 4. API ROUTES
 @app.get("/")
 async def read_root():
     return {
         "status": "online", 
         "model_loaded": model is not None,
-        "message": "Plant Disease Detection API is running"
+        "mode": "Legacy Bridge"
     }
 
 @app.head("/")
 async def health_check_head():
-    # Render uses HEAD requests to check if your app is alive
     return JSONResponse(content={"status": "online"})
 
 @app.post("/predict")
@@ -56,7 +55,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"error": "Model not loaded on server."})
     
     try:
-        # Save uploaded file
+        # Save the uploaded file
         file_ext = file.filename.split(".")[-1]
         unique_name = f"{uuid.uuid4()}.{file_ext}"
         img_path = os.path.join(UPLOAD_FOLDER, unique_name)
@@ -64,7 +63,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
         with open(img_path, "wb") as f:
             f.write(await file.read())
 
-        # Preprocessing (MobileNet/Standard CNN standard)
+        # Preprocessing
         img = Image.open(img_path).convert("RGB").resize((224, 224))
         img_array = np.array(img) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
@@ -75,10 +74,11 @@ async def predict(request: Request, file: UploadFile = File(...)):
         label = CLASS_NAMES[idx]
         confidence = float(np.max(predictions[0]))
 
+        base_url = str(request.base_url).rstrip('/')
         return {
             "prediction": label,
             "confidence": f"{confidence * 100:.2f}%",
-            "image_url": f"{str(request.base_url).rstrip('/')}/static/{unique_name}"
+            "image_url": f"{base_url}/static/{unique_name}"
         }
 
     except Exception as e:

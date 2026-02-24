@@ -1,0 +1,19 @@
+# AI & Machine Learning
+# Use -cpu for cloud hosting to save space/memory
+tensorflow-cpu>=2.15.0
+numpy>=1.23.5
+pandas>=2.0.0
+
+# Web Server (FastAPI)
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.7
+gunicorn>=21.2.0
+
+# Image Processing
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+
+# Utilities
+requests>=2.31.0
+matplotlib>=3.7.0

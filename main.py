@@ -37,12 +37,16 @@ def clean_config(config):
             config[key] = clean_config(value)
     return config
 
-# This "Proxy" class intercepts any layer loading call
+# --- THE FAULT-TOLERANT LAYER PROXY ---
 class UniversalLayerProxy:
-    def __getattr__(self, name):
-        layer_cls = getattr(keras.layers, name)
-        if not isinstance(layer_cls, type):
-            return layer_cls
+    def get_layer(self, name):
+        # Try standard layers first, then preprocessing
+        layer_cls = getattr(keras.layers, name, None)
+        if layer_cls is None:
+            layer_cls = getattr(keras.layers.experimental.preprocessing, name, None)
+        
+        if layer_cls is None or not isinstance(layer_cls, type):
+            return None
             
         class SafeLayer(layer_cls):
             @classmethod
@@ -52,17 +56,22 @@ class UniversalLayerProxy:
 
 MODEL_PATH = "legacy_model.h5"
 
-print("🚀 Starting server with Universal Layer Proxy...")
+print("🚀 Starting server with Fault-Tolerant Layer Proxy...")
 try:
-    # This list covers every layer type found in MobileNet and standard CNNs
+    # A massive list to catch everything. If it doesn't exist, it's ignored.
     layer_names = [
         'InputLayer', 'Conv2D', 'DepthwiseConv2D', 'BatchNormalization', 
         'ReLU', 'MaxPooling2D', 'GlobalAveragePooling2D', 'Dense', 
-        'Dropout', 'Flatten', 'ZeroPadding2D', 'Add', 'Rescale', 'Activation'
+        'Dropout', 'Flatten', 'ZeroPadding2D', 'Add', 'Rescale', 'Activation',
+        'Resizing', 'Normalization'
     ]
     
     proxy = UniversalLayerProxy()
-    custom_objects = {name: getattr(proxy, name) for name in layer_names}
+    custom_objects = {}
+    for name in layer_names:
+        patched = proxy.get_layer(name)
+        if patched:
+            custom_objects[name] = patched
     
     with keras.utils.custom_object_scope(custom_objects):
         model = keras.models.load_model(MODEL_PATH, compile=False)
@@ -103,4 +112,3 @@ async def predict(request: Request, file: UploadFile = File(...)):
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
-    

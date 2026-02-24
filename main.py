@@ -8,12 +8,22 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import uvicorn
 
+# --- THE FIX FOR THE "FATAL ERROR" ---
+# This ignores the modern Keras 3 metadata that makes Keras 2 crash
+from tensorflow.keras.layers import InputLayer
+
+class PatchedInputLayer(InputLayer):
+    def __init__(self, *args, **kwargs):
+        kwargs.pop('batch_shape', None)
+        kwargs.pop('optional', None)
+        super().__init__(*args, **kwargs)
+
 # 1. IMPORT HEATMAP LOGIC
 try:
     from test_heatmap import heatmap
 except ImportError:
     heatmap = None
-    print("⚠️ Warning: test_heatmap.py not found. Heatmaps disabled.")
+    print("⚠️ Warning: test_heatmap.py not found.")
 
 app = FastAPI()
 
@@ -23,14 +33,17 @@ if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 app.mount("/static", StaticFiles(directory=UPLOAD_FOLDER), name="static")
 
-# 3. MODEL LOADING (The Standard Way)
-# Ensure you uploaded 'legacy_model.h5' to your GitHub repo!
+# 3. MODEL LOADING
 MODEL_PATH = "legacy_model.h5"
 
-print("Attempting to load legacy model...")
+print("Attempting to load legacy model with PatchedInputLayer...")
 try:
-    # compile=False is used because we only need the model for prediction, not training
-    model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+    # We use custom_objects to tell Keras to use our patched version
+    model = tf.keras.models.load_model(
+        MODEL_PATH, 
+        custom_objects={'InputLayer': PatchedInputLayer}, 
+        compile=False
+    )
     print("✅ SUCCESS: Legacy model loaded perfectly!")
 except Exception as e:
     print(f"❌ FATAL ERROR: {e}")
@@ -44,16 +57,15 @@ async def read_root():
     return {
         "status": "online", 
         "model_loaded": model is not None,
-        "msg": "Legacy model deployment successful" if model else "Model file missing or corrupt"
+        "msg": "Legacy model deployment successful" if model else "Model failed to load - check logs"
     }
 
 @app.post("/predict")
 async def predict(request: Request, file: UploadFile = File(...)):
     if model is None:
-        return JSONResponse(status_code=500, content={"error": "Model not loaded on server."})
+        return JSONResponse(status_code=500, content={"error": "Model not loaded."})
     
     try:
-        # Save uploaded file
         file_ext = file.filename.split(".")[-1]
         unique_name = f"{uuid.uuid4()}.{file_ext}"
         img_path = os.path.join(UPLOAD_FOLDER, unique_name)
@@ -80,7 +92,6 @@ async def predict(request: Request, file: UploadFile = File(...)):
             except Exception as he:
                 print(f"Heatmap error: {he}")
 
-        # Generate Full URLs for the Flutter app
         base_url = str(request.base_url).rstrip('/')
         return {
             "prediction": label,

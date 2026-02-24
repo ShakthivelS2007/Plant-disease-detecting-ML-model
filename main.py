@@ -8,15 +8,27 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import uvicorn
 
-# --- THE FIX FOR THE "FATAL ERROR" ---
-# This ignores the modern Keras 3 metadata that makes Keras 2 crash
-from tensorflow.keras.layers import InputLayer
+# --- THE NUCLEAR OPTION: KERAS 3 TO KERAS 2 COMPATIBILITY PATCH ---
+# This intercepts the layer creation process to remove incompatible metadata
+from tensorflow.python.keras.layers import serialization
 
-class PatchedInputLayer(InputLayer):
-    def __init__(self, *args, **kwargs):
-        kwargs.pop('batch_shape', None)
-        kwargs.pop('optional', None)
-        super().__init__(*args, **kwargs)
+original_get_layer_obj = serialization.get_layer_obj
+
+def patched_get_layer_obj(config):
+    # Fix 1: Handle the 'DTypePolicy' crash (Unrecognized keyword)
+    if 'dtype' in config and isinstance(config['dtype'], dict):
+        if 'config' in config['dtype'] and 'name' in config['dtype']['config']:
+            config['dtype'] = config['dtype']['config']['name']
+    
+    # Fix 2: Handle the 'InputLayer' crash (Unrecognized keywords)
+    config.pop('batch_shape', None)
+    config.pop('optional', None)
+    config.pop('registered_name', None)
+    
+    return original_get_layer_obj(config)
+
+# Apply the patch globally to the Keras engine
+serialization.get_layer_obj = patched_get_layer_obj
 
 # 1. IMPORT HEATMAP LOGIC
 try:
@@ -36,14 +48,10 @@ app.mount("/static", StaticFiles(directory=UPLOAD_FOLDER), name="static")
 # 3. MODEL LOADING
 MODEL_PATH = "legacy_model.h5"
 
-print("Attempting to load legacy model with PatchedInputLayer...")
+print("Running Global Keras Patch and loading model...")
 try:
-    # We use custom_objects to tell Keras to use our patched version
-    model = tf.keras.models.load_model(
-        MODEL_PATH, 
-        custom_objects={'InputLayer': PatchedInputLayer}, 
-        compile=False
-    )
+    # We load with compile=False to avoid needing custom optimizer configs
+    model = tf.keras.models.load_model(MODEL_PATH, compile=False)
     print("✅ SUCCESS: Legacy model loaded perfectly!")
 except Exception as e:
     print(f"❌ FATAL ERROR: {e}")
@@ -59,6 +67,11 @@ async def read_root():
         "model_loaded": model is not None,
         "msg": "Legacy model deployment successful" if model else "Model failed to load - check logs"
     }
+
+@app.head("/")
+async def health_check_head():
+    # This fixes the 405 error from Render's health checker
+    return JSONResponse(content={"status": "online"})
 
 @app.post("/predict")
 async def predict(request: Request, file: UploadFile = File(...)):

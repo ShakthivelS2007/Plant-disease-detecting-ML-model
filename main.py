@@ -8,34 +8,44 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import uvicorn
 
-# --- THE NUCLEAR OPTION: KERAS 3 TO KERAS 2 COMPATIBILITY PATCH ---
-# This intercepts the layer creation process to remove incompatible metadata
+# --- THE DEFINITIVE VERSION-COMPATIBILITY PATCH ---
+# This looks in all possible hiding places for the Keras layer-loader
+import tensorflow.keras.layers as layers
 from tensorflow.python.keras.layers import serialization
 
-original_get_layer_obj = serialization.get_layer_obj
+try:
+    # Most common path for TF 2.15
+    original_get_layer = serialization.get_layer_obj
+    target_module = serialization
+    target_attr = 'get_layer_obj'
+except AttributeError:
+    # Fallback for older/newer sub-versions
+    original_get_layer = getattr(serialization, 'get_layer', None)
+    target_module = serialization
+    target_attr = 'get_layer'
 
-def patched_get_layer_obj(config):
-    # Fix 1: Handle the 'DTypePolicy' crash (Unrecognized keyword)
-    if 'dtype' in config and isinstance(config['dtype'], dict):
-        if 'config' in config['dtype'] and 'name' in config['dtype']['config']:
-            config['dtype'] = config['dtype']['config']['name']
+def patched_get_layer(config):
+    if isinstance(config, dict):
+        # Strip Keras 3 metadata that Keras 2 hates
+        if 'dtype' in config and isinstance(config['dtype'], dict):
+            if 'config' in config['dtype'] and 'name' in config['dtype']['config']:
+                config['dtype'] = config['dtype']['config']['name']
+        
+        config.pop('batch_shape', None)
+        config.pop('optional', None)
+        config.pop('registered_name', None)
     
-    # Fix 2: Handle the 'InputLayer' crash (Unrecognized keywords)
-    config.pop('batch_shape', None)
-    config.pop('optional', None)
-    config.pop('registered_name', None)
-    
-    return original_get_layer_obj(config)
+    return original_get_layer(config)
 
-# Apply the patch globally to the Keras engine
-serialization.get_layer_obj = patched_get_layer_obj
+# Apply the patch
+if original_get_layer:
+    setattr(target_module, target_attr, patched_get_layer)
 
 # 1. IMPORT HEATMAP LOGIC
 try:
     from test_heatmap import heatmap
 except ImportError:
     heatmap = None
-    print("⚠️ Warning: test_heatmap.py not found.")
 
 app = FastAPI()
 
@@ -48,9 +58,9 @@ app.mount("/static", StaticFiles(directory=UPLOAD_FOLDER), name="static")
 # 3. MODEL LOADING
 MODEL_PATH = "legacy_model.h5"
 
-print("Running Global Keras Patch and loading model...")
+print("Starting server with Version-Compatibility Patch...")
 try:
-    # We load with compile=False to avoid needing custom optimizer configs
+    # compile=False avoids needing to patch optimizers too
     model = tf.keras.models.load_model(MODEL_PATH, compile=False)
     print("✅ SUCCESS: Legacy model loaded perfectly!")
 except Exception as e:
@@ -70,7 +80,6 @@ async def read_root():
 
 @app.head("/")
 async def health_check_head():
-    # This fixes the 405 error from Render's health checker
     return JSONResponse(content={"status": "online"})
 
 @app.post("/predict")

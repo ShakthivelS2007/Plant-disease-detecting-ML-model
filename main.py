@@ -1,6 +1,5 @@
 import os
 import uuid
-import json
 import numpy as np
 import tensorflow as tf
 from fastapi import FastAPI, File, UploadFile, Request
@@ -10,37 +9,26 @@ from PIL import Image
 import uvicorn
 import traceback
 
-# --- THE IRONCLAD REPAIR PATCH ---
+# --- THE SLEDGEHAMMER REPAIR PATCH ---
 from tensorflow.keras import layers
 
 def strip_keras3(kwargs):
-    """Deep cleaning of Keras 3 metadata to prevent 'as_list' and 'DTypePolicy' errors"""
-    
-    # 1. FIX: The 'as_list' error
-    # If batch_input_shape is a string, convert it to a proper list
-    if 'batch_input_shape' in kwargs and isinstance(kwargs['batch_input_shape'], str):
-        try:
-            kwargs['batch_input_shape'] = json.loads(kwargs['batch_input_shape'])
-        except:
-            # Fallback for standard MobileNet/CNN input
-            kwargs['batch_input_shape'] = [None, 224, 224, 3]
-
-    # 2. REMOVE: Modern Keras 3 keywords that crash Keras 2
+    """The Sledgehammer: Wipe all problematic metadata to force Keras 2 defaults"""
+    # These three are the primary causes of 'as_list' and 'DTypePolicy' errors
+    kwargs.pop('batch_input_shape', None)
     kwargs.pop('batch_shape', None)
+    kwargs.pop('dtype', None)
+    
+    # Remove modern Keras 3 noise
     kwargs.pop('optional', None)
     kwargs.pop('registered_name', None)
-    
-    # 3. FIX: The DTypePolicy crash
-    # If it's a dict (Keras 3 style), remove it and let Keras 2 default to float32
-    if 'dtype' in kwargs and isinstance(kwargs['dtype'], dict):
-        kwargs.pop('dtype')
-        
     return kwargs
 
 def patch_layer(layer_class):
-    """Factory to create Keras 2 compatible layers on the fly"""
+    """Factory to create Keras 2 compatible layers by ignoring bad config"""
     class PatchedLayer(layer_class):
         def __init__(self, *args, **kwargs):
+            # We strip the config before it ever reaches the Keras Layer __init__
             super().__init__(*args, **strip_keras3(kwargs))
     return PatchedLayer
 
@@ -61,29 +49,29 @@ app.mount("/static", StaticFiles(directory=UPLOAD_FOLDER), name="static")
 # 3. MODEL LOADING
 MODEL_PATH = "legacy_model.h5"
 
-print("Starting server with Ironclad Repair Scope...")
+print("Starting server with Sledgehammer Repair Scope...")
 try:
-    # Comprehensive layer list to cover almost any Plant Disease model architecture
+    # Comprehensive layer list for CNN/MobileNet architectures
     layer_types = [
         'InputLayer', 'Conv2D', 'DepthwiseConv2D', 'BatchNormalization', 
         'ReLU', 'MaxPooling2D', 'GlobalAveragePooling2D', 'Dense', 
         'Dropout', 'Flatten', 'ZeroPadding2D', 'Add', 'Rescale', 'Activation'
     ]
     
-    # Create the mapping
     custom_objects = {}
     for name in layer_types:
         if hasattr(layers, name):
             custom_objects[name] = patch_layer(getattr(layers, name))
     
-    # Load the model with the protective scope
+    # Load model with compile=False to avoid optimizer-related version crashes
     with tf.keras.utils.custom_object_scope(custom_objects):
         model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+    
     print("✅ SUCCESS: Legacy model loaded perfectly!")
 
 except Exception as e:
     print(f"❌ FATAL ERROR: {e}")
-    traceback.print_exc() # This prints the full error path to your Render logs
+    traceback.print_exc()
     model = None
 
 # 4. API LOGIC
@@ -94,7 +82,7 @@ async def read_root():
     return {
         "status": "online", 
         "model_loaded": model is not None,
-        "engine": "Universal Ironclad Repair"
+        "engine": "Sledgehammer Patch"
     }
 
 @app.head("/")
@@ -114,7 +102,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
         with open(img_path, "wb") as f:
             f.write(await file.read())
 
-        # Preprocessing
+        # Standard Preprocessing
         img = Image.open(img_path).convert("RGB").resize((224, 224))
         img_array = np.array(img) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
@@ -125,20 +113,9 @@ async def predict(request: Request, file: UploadFile = File(...)):
         label = CLASS_NAMES[idx]
         confidence = float(np.max(predictions[0]))
 
-        # Heatmap
-        heatmap_file = None
-        if heatmap:
-            try:
-                heatmap_file = heatmap(img_path, model)
-            except Exception as he:
-                print(f"Heatmap error: {he}")
-
-        base_url = str(request.base_url).rstrip('/')
         return {
             "prediction": label,
-            "confidence": f"{confidence * 100:.2f}%",
-            "original_image_url": f"{base_url}/static/{unique_name}",
-            "heatmap_url": f"{base_url}/static/{heatmap_file}" if heatmap_file else None
+            "confidence": f"{confidence * 100:.2f}%"
         }
 
     except Exception as e:

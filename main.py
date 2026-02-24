@@ -12,58 +12,59 @@ import uvicorn
 
 app = FastAPI()
 
-# --- FOLDER SETUP ---
+# FOLDER SETUP
 UPLOAD_FOLDER = "uploads"
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 app.mount("/static", StaticFiles(directory=UPLOAD_FOLDER), name="static")
 
-# --- THE UNIVERSAL SCRUBBER ---
+# --- THE UNIVERSAL CONFIG SCRUBBER ---
 def clean_config(config):
-    """Recursively removes Keras 3 metadata from any layer configuration"""
     if not isinstance(config, dict):
         return config
     
-    # Remove Keras 3 specific keys that break Keras 2
-    keys_to_pop = ['batch_shape', 'optional', 'registered_name', 'module']
-    for key in keys_to_pop:
+    # Kill Keras 3 specific keys
+    for key in ['batch_shape', 'optional', 'registered_name', 'module']:
         config.pop(key, None)
     
-    # Fix the DTypePolicy/dtype issue
+    # Convert DTypePolicy dict to a simple string
     if 'dtype' in config and isinstance(config['dtype'], dict):
-        # Extract just the string name (e.g., 'float32')
         config['dtype'] = config['dtype'].get('config', {}).get('name', 'float32')
         
-    # Recursively clean nested dictionaries (like initializers)
+    # Deep clean nested structures
     for key, value in config.items():
         if isinstance(value, dict):
             config[key] = clean_config(value)
-            
     return config
 
-# Create a 'Global Wrapper' for any layer class
-def wrap_layer(layer_cls):
-    class SafeLayer(layer_cls):
-        @classmethod
-        def from_config(cls, config):
-            return super(SafeLayer, cls).from_config(clean_config(config))
-    return SafeLayer
+# This "Proxy" class intercepts any layer loading call
+class UniversalLayerProxy:
+    def __getattr__(self, name):
+        layer_cls = getattr(keras.layers, name)
+        if not isinstance(layer_cls, type):
+            return layer_cls
+            
+        class SafeLayer(layer_cls):
+            @classmethod
+            def from_config(cls, config):
+                return super(SafeLayer, cls).from_config(clean_config(config))
+        return SafeLayer
 
 MODEL_PATH = "legacy_model.h5"
 
-print("🚀 Starting server with Universal Config Scrubber...")
+print("🚀 Starting server with Universal Layer Proxy...")
 try:
-    # We wrap the most common layers that cause these 'deserialization' errors
-    patched_objects = {
-        'InputLayer': wrap_layer(keras.layers.InputLayer),
-        'Conv2D': wrap_layer(keras.layers.Conv2D),
-        'DepthwiseConv2D': wrap_layer(keras.layers.DepthwiseConv2D),
-        'BatchNormalization': wrap_layer(keras.layers.BatchNormalization),
-        'Dense': wrap_layer(keras.layers.Dense),
-        'ReLU': wrap_layer(keras.layers.ReLU)
-    }
+    # This list covers every layer type found in MobileNet and standard CNNs
+    layer_names = [
+        'InputLayer', 'Conv2D', 'DepthwiseConv2D', 'BatchNormalization', 
+        'ReLU', 'MaxPooling2D', 'GlobalAveragePooling2D', 'Dense', 
+        'Dropout', 'Flatten', 'ZeroPadding2D', 'Add', 'Rescale', 'Activation'
+    ]
     
-    with keras.utils.custom_object_scope(patched_objects):
+    proxy = UniversalLayerProxy()
+    custom_objects = {name: getattr(proxy, name) for name in layer_names}
+    
+    with keras.utils.custom_object_scope(custom_objects):
         model = keras.models.load_model(MODEL_PATH, compile=False)
     print("✅ SUCCESS: Model loaded perfectly!")
 except Exception as e:

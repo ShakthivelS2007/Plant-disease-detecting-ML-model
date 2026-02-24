@@ -8,44 +8,41 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import uvicorn
 
-# --- THE DEFINITIVE VERSION-COMPATIBILITY PATCH ---
-# This looks in all possible hiding places for the Keras layer-loader
-import tensorflow.keras.layers as layers
+# --- THE NUCLEAR OPTION: KERAS 3 TO KERAS 2 COMPATIBILITY PATCH ---
 from tensorflow.python.keras.layers import serialization
 
+# We find the internal Keras function that creates layers from the file config
 try:
-    # Most common path for TF 2.15
     original_get_layer = serialization.get_layer_obj
-    target_module = serialization
     target_attr = 'get_layer_obj'
 except AttributeError:
-    # Fallback for older/newer sub-versions
     original_get_layer = getattr(serialization, 'get_layer', None)
-    target_module = serialization
     target_attr = 'get_layer'
 
 def patched_get_layer(config):
     if isinstance(config, dict):
-        # Strip Keras 3 metadata that Keras 2 hates
+        # FIX 1: Convert 'DTypePolicy' dictionary back to a simple string (float32)
         if 'dtype' in config and isinstance(config['dtype'], dict):
             if 'config' in config['dtype'] and 'name' in config['dtype']['config']:
                 config['dtype'] = config['dtype']['config']['name']
         
+        # FIX 2: Strip modern Keras 3 keywords that Keras 2 doesn't recognize
         config.pop('batch_shape', None)
         config.pop('optional', None)
         config.pop('registered_name', None)
     
     return original_get_layer(config)
 
-# Apply the patch
+# Apply the patch to the Keras engine before loading the model
 if original_get_layer:
-    setattr(target_module, target_attr, patched_get_layer)
+    setattr(serialization, target_attr, patched_get_layer)
 
 # 1. IMPORT HEATMAP LOGIC
 try:
     from test_heatmap import heatmap
 except ImportError:
     heatmap = None
+    print("⚠️ Warning: test_heatmap.py not found.")
 
 app = FastAPI()
 
@@ -60,7 +57,7 @@ MODEL_PATH = "legacy_model.h5"
 
 print("Starting server with Version-Compatibility Patch...")
 try:
-    # compile=False avoids needing to patch optimizers too
+    # compile=False is crucial to avoid patching Optimizer metadata too
     model = tf.keras.models.load_model(MODEL_PATH, compile=False)
     print("✅ SUCCESS: Legacy model loaded perfectly!")
 except Exception as e:
@@ -80,6 +77,7 @@ async def read_root():
 
 @app.head("/")
 async def health_check_head():
+    # Responds to Render's health check to prevent 405 errors
     return JSONResponse(content={"status": "online"})
 
 @app.post("/predict")

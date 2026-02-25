@@ -18,32 +18,44 @@ CLASS_NAMES = ['Early Blight', 'Healthy', 'Leaf Curl']
 
 def generate_heatmap_base64(img_array):
     """
-    Targets the 'Necrotic Core' of the disease. 
-    Uses morphological opening to remove noise and a huge Gaussian blur 
-    to create a professional-grade diagnostic 'glow'.
+    Saliency Mapping: Captures texture (Curl) and necrosis (Blight).
+    This logic highlights the features the AI is trained to recognize.
     """
     try:
-        # 1. Image Prep
+        # 1. Prepare raw image
         raw_img = (img_array[0] * 255).astype(np.uint8)
         gray = cv2.cvtColor(raw_img, cv2.COLOR_RGB2GRAY)
         
-        # 2. Adaptive Thresholding: Only grab pixels much darker than their neighbors
-        # This effectively ignores the bright background and highlights dark spots.
-        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                       cv2.THRESH_BINARY_INV, 13, 6)
+        # 2. Texture Analysis (For Leaf Curl)
+        # Sobel identifies the physical wrinkles and puckering of Curl.
+        grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        texture = cv2.addWeighted(cv2.convertScaleAbs(grad_x), 0.5, 
+                                   cv2.convertScaleAbs(grad_y), 0.5, 0)
         
-        # 3. Morphology: Remove tiny specks/noise (salt & pepper effect)
+        # 3. Contrast Analysis (For Early Blight)
+        # Adaptive Thresholding locks onto those dark necrotic 'target' spots.
+        necrotic = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                         cv2.THRESH_BINARY_INV, 13, 7)
+        
+        # 4. Merge Signals & Polish
+        # We clean noise so it doesn't look like grain or static.
+        combined = cv2.addWeighted(texture, 0.6, necrotic, 0.4, 0)
         kernel = np.ones((3,3), np.uint8)
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel)
         
-        # 4. Create the 'Focus Cloud': A massive 91x91 blur for that 'AI Brain' look
-        glow = cv2.GaussianBlur(thresh, (91, 91), 0)
-        
-        # 5. Apply JET (Blue-to-Red thermal spectrum)
+        # 5. The 'Focus' Glow
+        # Massive blur creates the thermal signature look.
+        glow = cv2.GaussianBlur(combined, (91, 91), 0)
         heatmap = cv2.applyColorMap(glow, cv2.COLORMAP_JET)
         
-        # 6. Blend: 75% original leaf, 25% heatmap focus
-        result_img = cv2.addWeighted(raw_img, 0.75, heatmap, 0.25, 0)
+        # 6. High-Contrast Overlay
+        # Mask ensures we ONLY paint heat where the 'interest' is high.
+        mask = glow / 255.0
+        mask = np.stack([mask]*3, axis=-1)
+        
+        # This math keeps the leaf bright but the spots/curls glowing red.
+        result_img = (raw_img * (1 - mask * 0.4) + heatmap * (mask * 0.8)).astype(np.uint8)
         
         _, buffer = cv2.imencode('.jpg', result_img)
         return base64.b64encode(buffer).decode('utf-8')
@@ -52,13 +64,12 @@ def generate_heatmap_base64(img_array):
 
 @app.api_route("/", methods=["GET", "HEAD"])
 async def health():
-    return {"status": "online", "viz": "Morphological_Saliency_v2"}
+    return {"status": "online", "mode": "Dual-Feature_Saliency"}
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     interpreter = None
     try:
-        # Process Input
         content = await file.read()
         with Image.open(io.BytesIO(content)) as img:
             img = img.convert("RGB").resize((224, 224))
@@ -68,7 +79,6 @@ async def predict(file: UploadFile = File(...)):
         if not os.path.exists(MODEL_PATH):
             return JSONResponse(status_code=404, content={"error": "Model missing"})
 
-        # TFLite Inference
         interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
         interpreter.allocate_tensors()
         
@@ -82,7 +92,6 @@ async def predict(file: UploadFile = File(...)):
         idx = np.argmax(predictions)
         confidence = float(predictions[idx])
         
-        # Generate the 'Clean' Heatmap
         heatmap_data = generate_heatmap_base64(img_array)
 
         return {

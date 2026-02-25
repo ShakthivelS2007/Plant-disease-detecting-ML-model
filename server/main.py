@@ -129,7 +129,7 @@ async def predict(file: UploadFile = File(...)):
         return {
             "prediction": CLASS_NAMES[idx],
             "remedies": REMEDIES[idx],
-            "wikiURL": WIKI_URL[idx],
+            "wikipage": WIKI_URL[idx],
             "confidence": f"{confidence * 100:.2f}%",
             "heatmap": heatmap_data
         }

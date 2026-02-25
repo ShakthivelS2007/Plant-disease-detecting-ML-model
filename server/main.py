@@ -99,8 +99,37 @@ async def predict(file: UploadFile = File(...)):
         # Visualization
         heatmap_data = generate_heatmap_base64(img_array)
 
+        REMEDIES = [
+            [
+                "Remove Infected Leaves",
+                "Use Fungicides like Chlorothalonil, Mancozeb, Azoxystrobin",
+                "Improve air circulation between plants",
+            ], 
+            
+            [
+                "Maintain proper watering schedule.",
+                "Ensure adequate sunlight exposure.",
+                "Monitor for early pest or disease signs.",
+            ],
+            
+            [
+                "Control whiteflies using neem oil or approved insecticides.",
+                "Remove and destroy infected plants to prevent spread.",
+                "Maintain proper plant nutrition and field hygiene."
+                
+            ],
+        ]
+
+        WIKI_URL = [
+            "https://en.wikipedia.org/wiki/Alternaria_solani", 
+            "None", 
+            "https://en.wikipedia.org/wiki/Tomato_yellow_leaf_curl_virus", 
+        ]
+
         return {
             "prediction": CLASS_NAMES[idx],
+            "remedies": REMEDIES[idx],
+            "wikiURL": WIKI_URL[idx],
             "confidence": f"{confidence * 100:.2f}%",
             "heatmap": heatmap_data
         }
@@ -115,3 +144,4 @@ async def predict(file: UploadFile = File(...)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+

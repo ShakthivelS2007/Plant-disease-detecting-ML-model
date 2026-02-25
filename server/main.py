@@ -17,40 +17,43 @@ MODEL_PATH = os.path.join(BASE_DIR, "leaf_model_v1.tflite")
 CLASS_NAMES = ['Early Blight', 'Healthy', 'Leaf Curl']
 
 def generate_heatmap_base64(img_array):
-    """Generates a visual heatmap. Changed to COLORMAP_HOT for better clarity."""
+    """
+    Generates a smooth 'Focus' heatmap similar to Grad-CAM.
+    Uses Gaussian blurring to create the thermal 'cloud' effect.
+    """
     try:
-        # Convert back to 0-255 scale
+        # 1. Prepare the raw image (0-255 scale)
         raw_img = (img_array[0] * 255).astype(np.uint8)
-        
-        # Convert to grayscale for edge detection
         gray = cv2.cvtColor(raw_img, cv2.COLOR_RGB2GRAY)
         
-        # Find gradients (the 'activity' in the image)
-        grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        abs_grad = cv2.convertScaleAbs(cv2.addWeighted(grad_x, 0.5, grad_y, 0.5, 0))
+        # 2. Thresholding to identify areas of interest
+        _, thresh = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         
-        # APPLY COLORMAP_HOT: Areas of high change glow orange/white, low change stays dark
-        heatmap = cv2.applyColorMap(abs_grad, cv2.COLORMAP_HOT)
+        # 3. Apply heavy Gaussian Blur to get that smooth 'thermal' look
+        # (55, 55) is the kernel size - larger numbers = smoother clouds
+        glow = cv2.GaussianBlur(thresh, (55, 55), 0)
         
-        # Blend the original image with the heatmap
-        result_img = cv2.addWeighted(raw_img, 0.7, heatmap, 0.3, 0)
+        # 4. Apply COLORMAP_JET for the Blue-to-Red rainbow spectrum
+        heatmap = cv2.applyColorMap(glow, cv2.COLORMAP_JET)
         
-        # Encode to Base64
+        # 5. Blend: 60% original photo, 40% heatmap overlay
+        result_img = cv2.addWeighted(raw_img, 0.6, heatmap, 0.4, 0)
+        
+        # Encode to Base64 for Flutter
         _, buffer = cv2.imencode('.jpg', result_img)
         return base64.b64encode(buffer).decode('utf-8')
     except Exception:
         return ""
 
-# Supports GET and HEAD to keep Render awake without 405 errors
+# Handles GET and HEAD requests to keep the server awake
 @app.api_route("/", methods=["GET", "HEAD"])
 async def health():
-    """Health check for pinger and basic diagnostics."""
     exists = os.path.exists(MODEL_PATH)
     return {
         "status": "online",
         "model_found": exists,
         "engine": "TensorFlow CPU 2.15+",
+        "heatmap_mode": "Gaussian Focus",
         "message": "Ready for inference"
     }
 
@@ -58,7 +61,7 @@ async def health():
 async def predict(file: UploadFile = File(...)):
     interpreter = None
     try:
-        # 1. Load and Resize
+        # 1. Process Input
         content = await file.read()
         with Image.open(io.BytesIO(content)) as img:
             img = img.convert("RGB").resize((224, 224))
@@ -68,7 +71,7 @@ async def predict(file: UploadFile = File(...)):
         if not os.path.exists(MODEL_PATH):
             return JSONResponse(status_code=404, content={"error": "Model missing"})
 
-        # 2. Setup TFLite Interpreter
+        # 2. Setup TFLite (Full TF Engine for V12 Opcode support)
         interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
         interpreter.allocate_tensors()
         
@@ -95,7 +98,7 @@ async def predict(file: UploadFile = File(...)):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": "Prediction Failed", "details": str(e)})
     finally:
-        # Help Render's RAM management
+        # Prevent Memory Leaks on Render's Free Tier
         if interpreter:
             del interpreter
         gc.collect()

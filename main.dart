@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -147,7 +148,7 @@ class _HomeScreenState extends State<HomeScreen> {
   File? image;
   String result = "";
   bool loading = false;
-  String? heatmapURL;
+  Uint8List? heatmapBytes;
   bool showHeatmap = false;
   List<dynamic>? remedies;
   String? wikiURL;
@@ -173,7 +174,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     var request = http.MultipartRequest(
       'POST',
-      Uri.parse("http://10.209.17.72:8000/predict"),
+      Uri.parse("https://plant-disease-detecting-ml-model-5.onrender.com/predict"),
     );
 
     request.files.add(
@@ -185,7 +186,10 @@ class _HomeScreenState extends State<HomeScreen> {
     var jsonData = json.decode(data);
 
     setState(() {
-      heatmapURL = jsonData['heatmap'];
+      String? heatmapBase64 = jsonData['heatmap'];
+      if (heatmapBase64 != null && heatmapBase64.isNotEmpty) {
+        heatmapBytes = base64Decode(heatmapBase64);
+      }
       showHeatmap = false;
       remedies = jsonData['remedies'];
       wikiURL = jsonData['wikipage'];
@@ -325,7 +329,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       //Heatmap
                       const SizedBox(height: 20),
                   
-                      if (heatmapURL != null)
+                      if (heatmapBytes != null)
                         Column(
                           children: [
                             ElevatedButton.icon(
@@ -381,20 +385,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                   child: ClipRRect(
                                     borderRadius: BorderRadius.circular(20),
-                                    child: Image.network(
-                                      heatmapURL!,
+                                    child: Image.memory(
+                                      heatmapBytes!,
                                       height: 250,
                                       width: double.infinity,
                                       fit: BoxFit.cover,
-                                      loadingBuilder: (context, child, progress) {
-                                        if (progress == null) return child;
-                                          return const SizedBox(
-                                            height: 250,
-                                            child: Center(
-                                              child: CircularProgressIndicator(),
-                                            ),
-                                          );
-                                      },
                                       errorBuilder: (context, error, stackTrace) {
                                         return const SizedBox(
                                           height: 250,
@@ -444,5 +439,4 @@ class SettingsScreen extends StatelessWidget {
       ),
     );
   }
-
 }

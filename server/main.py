@@ -17,58 +17,65 @@ MODEL_PATH = os.path.join(BASE_DIR, "leaf_model_v1.tflite")
 CLASS_NAMES = ['Early Blight', 'Healthy', 'Leaf Curl']
 
 def generate_heatmap_base64(img_array):
-    """Generates a visual heatmap for the Flutter UI."""
+    """Generates a visual heatmap. Changed to COLORMAP_HOT for better clarity."""
     try:
+        # Convert back to 0-255 scale
         raw_img = (img_array[0] * 255).astype(np.uint8)
+        
+        # Convert to grayscale for edge detection
         gray = cv2.cvtColor(raw_img, cv2.COLOR_RGB2GRAY)
+        
+        # Find gradients (the 'activity' in the image)
         grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
         grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
         abs_grad = cv2.convertScaleAbs(cv2.addWeighted(grad_x, 0.5, grad_y, 0.5, 0))
-        heatmap = cv2.applyColorMap(abs_grad, cv2.COLORMAP_JET)
-        result_img = cv2.addWeighted(raw_img, 0.6, heatmap, 0.4, 0)
+        
+        # APPLY COLORMAP_HOT: Areas of high change glow orange/white, low change stays dark
+        heatmap = cv2.applyColorMap(abs_grad, cv2.COLORMAP_HOT)
+        
+        # Blend the original image with the heatmap
+        result_img = cv2.addWeighted(raw_img, 0.7, heatmap, 0.3, 0)
+        
+        # Encode to Base64
         _, buffer = cv2.imencode('.jpg', result_img)
         return base64.b64encode(buffer).decode('utf-8')
     except Exception:
         return ""
 
-# Updated this route to accept HEAD requests for the Cron-job pinger
+# Supports GET and HEAD to keep Render awake without 405 errors
 @app.api_route("/", methods=["GET", "HEAD"])
 async def health():
-    """Diagnostic check for model health and pinger compatibility."""
+    """Health check for pinger and basic diagnostics."""
     exists = os.path.exists(MODEL_PATH)
-    size = os.path.getsize(MODEL_PATH) if exists else 0
     return {
         "status": "online",
-        "model_file": "leaf_model_v1.tflite",
         "model_found": exists,
-        "engine": "TensorFlow CPU (Full)",
-        "message": "Server is awake and ready!"
+        "engine": "TensorFlow CPU 2.15+",
+        "message": "Ready for inference"
     }
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     interpreter = None
     try:
-        # 1. Read and Preprocess Image
+        # 1. Load and Resize
         content = await file.read()
         with Image.open(io.BytesIO(content)) as img:
             img = img.convert("RGB").resize((224, 224))
             img_array = np.array(img).astype(np.float32) / 255.0
             img_array = np.expand_dims(img_array, axis=0)
 
-        # 2. Check for Model
         if not os.path.exists(MODEL_PATH):
-            return JSONResponse(status_code=404, content={"error": "Model file not found"})
+            return JSONResponse(status_code=404, content={"error": "Model missing"})
 
-        # 3. Load TFLite Interpreter via TensorFlow
-        # Using tf.lite for maximum opcode version support
+        # 2. Setup TFLite Interpreter
         interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
         interpreter.allocate_tensors()
         
         input_details = interpreter.get_input_details()
         output_details = interpreter.get_output_details()
         
-        # 4. Run Prediction
+        # 3. Inference
         interpreter.set_tensor(input_details[0]['index'], img_array)
         interpreter.invoke()
         predictions = interpreter.get_tensor(output_details[0]['index'])[0]
@@ -76,7 +83,7 @@ async def predict(file: UploadFile = File(...)):
         idx = np.argmax(predictions)
         confidence = float(predictions[idx])
         
-        # 5. Get Heatmap Data
+        # 4. Generate Heatmap
         heatmap_data = generate_heatmap_base64(img_array)
 
         return {
@@ -86,9 +93,9 @@ async def predict(file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": "Inference Error", "details": str(e)})
+        return JSONResponse(status_code=500, content={"error": "Prediction Failed", "details": str(e)})
     finally:
-        # Crucial for Render's 512MB RAM limit
+        # Help Render's RAM management
         if interpreter:
             del interpreter
         gc.collect()

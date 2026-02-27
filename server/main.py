@@ -130,7 +130,7 @@ async def predict(file: UploadFile = File(...)):
             "prediction": CLASS_NAMES[idx],
             "remedies": REMEDIES[idx],
             "wikipage": WIKI_URL[idx],
-            "confidence": f"{confidence * 100:.2f}%",
+            "confidence": f"{confidence * 100:.2f}",
             "heatmap": heatmap_data
         }
 
@@ -144,4 +144,5 @@ async def predict(file: UploadFile = File(...)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
